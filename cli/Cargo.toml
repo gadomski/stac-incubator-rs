@@ -2,6 +2,13 @@
 name = "stac-cli"
 version = "0.0.1"
 edition = "2021"
+description = "Asynchronous features for stac-rs"
+documentation = "https://docs.rs/stac-async"
+readme = "README.md"
+repository = "https://github.com/gadomski/stac-incubator-rs"
+license = "MIT OR Apache-2.0"
+keywords = ["geospatial", "stac", "metadata", "geo", "raster"]
+categories = ["science", "data-structures"]
 
 [dependencies]
 anyhow = "1"
