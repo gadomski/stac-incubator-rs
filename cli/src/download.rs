@@ -90,7 +90,8 @@ fn download_url(
             Emoji::new("🔗 ", ""),
         ));
         progress_bar.set_message(file_name.to_string());
-        let mut response = client.get(url.clone()).send().await?;
+        let response = client.get(url.clone()).send().await?;
+        let mut response = response.error_for_status()?;
         if let Some(content_length) = response.content_length() {
             progress_bar.set_length(content_length);
         } else {
