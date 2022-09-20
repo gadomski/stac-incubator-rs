@@ -1,10 +1,13 @@
 use anyhow::{anyhow, Result};
 use console::Emoji;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
 use stac::{Href, Object};
 use stac_async::{AsyncRead, AsyncReader};
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write,
+    path::{Path, PathBuf},
+};
 use tokio::{fs::File, io::AsyncWriteExt, task::JoinHandle};
 use url::Url;
 
@@ -80,7 +83,7 @@ fn download_url(
             ProgressStyle::with_template(
                 "{prefix} [{elapsed_precise}] [{bar:.cyan/blue}] {bytes}/{total_bytes} {wide_msg:>}",
             )?
-            .with_key("eta", |state| format!("{:.1}s", state.eta().as_secs_f64()))
+            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
             .progress_chars("#>-"),
         );
         progress_bar.set_prefix(format!(
