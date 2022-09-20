@@ -80,7 +80,6 @@ fn download_url(
             ProgressStyle::with_template(
                 "{prefix} [{elapsed_precise}] [{bar:.cyan/blue}] {bytes}/{total_bytes} {wide_msg:>}",
             )?
-            .with_key("eta", |state| format!("{:.1}s", state.eta().as_secs_f64()))
             .progress_chars("#>-"),
         );
         progress_bar.set_prefix(format!(
