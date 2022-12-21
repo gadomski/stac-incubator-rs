@@ -1,117 +1,205 @@
-use anyhow::{anyhow, Result};
-use console::Emoji;
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use crate::message::Message;
+use console::{style, Term};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
-use stac::{Href, Object};
-use stac_async::{AsyncRead, AsyncReader};
-use std::{
-    fmt::Write,
-    path::{Path, PathBuf},
-};
-use tokio::{fs::File, io::AsyncWriteExt, task::JoinHandle};
+use stac::{Asset, Item, Link, Links, Value};
+use std::path::Path;
+use thiserror::Error;
+use tokio::{fs::File, io::AsyncWriteExt, task::JoinSet};
 use url::Url;
 
-pub async fn download_item(href: Href, outdir: impl AsRef<Path>) -> Result<()> {
-    let mut multi_progress = MultiProgress::new();
-    multi_progress.println(format!(
-        "[1/?] {}Reading {}...",
-        Emoji::new("📘 ", ""),
-        href.file_name()
-    ))?;
-    let reader = AsyncReader::new();
-    let object = reader.read(href.clone()).await?;
-    let mut item = if let Object::Item(item) = object.object {
-        item
-    } else {
-        return Err(anyhow!("expected item, got {}", object.object.r#type()));
-    };
-    let count = item.assets.len();
-    multi_progress.println(format!(
-        "[2/{}] {}Creating {}...",
-        count + 3,
-        Emoji::new("📁 ", ""),
-        outdir.as_ref().display()
-    ))?;
-    tokio::fs::create_dir_all(outdir.as_ref()).await?;
-    let mut handles = Vec::new();
-    for (i, asset) in item.assets.values_mut().enumerate() {
-        let href = Href::new(&asset.href);
-        asset.href = format!("./{}", href.file_name());
-        let outfile = outdir.as_ref().join(href.file_name());
-        match href {
-            Href::Url(url) => {
-                let handle = download_url(
-                    reader.client(),
-                    url,
-                    outfile,
-                    &mut multi_progress,
-                    i + 3,
-                    count + 3,
-                );
-                handles.push(handle);
-            }
-            Href::Path(_) => unimplemented!(),
-        }
-    }
-    for handle in handles {
-        handle.await??;
-    }
-    let outpath = outdir.as_ref().join(href.file_name());
-    println!(
-        "[{}/{}] {}Writing {}...",
-        count + 3,
-        count + 3,
-        Emoji::new("📘 ", ""),
-        outpath.display()
-    );
-    tokio::fs::write(outpath, serde_json::to_vec(&item)?).await?;
-    Ok(())
+#[derive(Debug, Error)]
+enum Error {
+    #[error("no file name: {0}")]
+    NoFileName(Url),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
+
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
+
+    #[error(transparent)]
+    UrlParse(#[from] url::ParseError),
 }
 
-fn download_url(
+pub async fn download(href: String, directory: impl AsRef<Path>) -> i32 {
+    match super::read(&href).await {
+        Ok(value) => {
+            let mut item = if let Value::Item(item) = value {
+                item
+            } else {
+                crate::print_err(&format!(
+                    "STAC value is a {}, not an Item",
+                    value.type_name()
+                ));
+                return 1;
+            };
+            if !directory.as_ref().exists() {
+                let message = Message::new(format!(
+                    "=> creating {}",
+                    style(directory.as_ref().to_string_lossy()).bold()
+                ));
+                if let Err(err) = tokio::fs::create_dir_all(directory.as_ref()).await {
+                    message.finish_red();
+                    crate::print_err(&err.to_string());
+                    return 1;
+                }
+                message.finish_blue();
+            }
+
+            let multi_progress = MultiProgress::new();
+            let message = Message::new(format!(
+                "=> downloading assets for {} to {}",
+                style(&item.id),
+                style(directory.as_ref().to_string_lossy()).bold()
+            ));
+            let client = Client::new();
+            let mut set = JoinSet::new();
+            for (key, asset) in item.assets.drain() {
+                let directory = directory.as_ref().to_path_buf();
+                let progress_bar = multi_progress.add(ProgressBar::new(0));
+                let client = client.clone();
+                set.spawn(async move {
+                    match download_asset(
+                        client,
+                        key.clone(),
+                        asset.clone(),
+                        directory,
+                        progress_bar,
+                    )
+                    .await
+                    {
+                        Ok((key, asset)) => Ok((key, asset)),
+                        Err(err) => Err((key, asset, err)),
+                    }
+                });
+            }
+            let mut errors = Vec::new();
+            let mut at_least_one_download_ok = false;
+            while let Some(result) = set.join_next().await {
+                match result {
+                    Ok(result) => match result {
+                        Ok((key, asset)) => {
+                            at_least_one_download_ok = true;
+                            item.assets.insert(key, asset);
+                        }
+                        Err((key, asset, err)) => {
+                            errors.push((Some(key), Some(asset), err));
+                        }
+                    },
+                    Err(err) => {
+                        errors.push((None, None, Error::from(err)));
+                    }
+                }
+            }
+            let term = Term::stdout();
+            let _ = term.clear_last_lines(1);
+            if at_least_one_download_ok {
+                if errors.is_empty() {
+                    message.finish_blue();
+                } else {
+                    message.finish_yellow();
+                }
+            } else {
+                message.finish_red();
+            }
+            for (key, mut asset, err) in errors {
+                let message = if let Some((key, _)) =
+                    key.and_then(|key| asset.take().map(|asset| (key, asset)))
+                {
+                    format!("{}: {}", key, err)
+                } else {
+                    format!("{}", err)
+                };
+                if at_least_one_download_ok {
+                    println!("   {}", style(format!("WARN: {}", message)).yellow());
+                } else {
+                    println!("   {}", style(format!("ERR: {}", message)).red().bold());
+                }
+            }
+
+            let message = Message::new("=> updating item links".to_string());
+            let path = directory.as_ref().join(&item.id).with_extension("json");
+            match update_links(&mut item, &path) {
+                Ok(()) => message.finish_blue(),
+                Err(err) => {
+                    message.finish_red();
+                    crate::print_err(&err.to_string());
+                    return 1;
+                }
+            }
+
+            let message = Message::new(format!(
+                "=> saving item to {}",
+                style(path.to_string_lossy()).bold()
+            ));
+            match stac_async::write_json_to_path(path, item).await {
+                Ok(()) => {
+                    message.finish_blue();
+                    0
+                }
+                Err(err) => {
+                    message.finish_red();
+                    crate::print_err(&err.to_string());
+                    1
+                }
+            }
+        }
+        Err(err) => {
+            crate::print_err(&err.to_string());
+            1
+        }
+    }
+}
+
+async fn download_asset(
     client: Client,
-    url: Url,
-    outfile: PathBuf,
-    multi_progress: &mut MultiProgress,
-    index: usize,
-    total: usize,
-) -> JoinHandle<Result<()>> {
-    let progress_bar = multi_progress.add(ProgressBar::new(0));
-    let file_name = url.path_segments().unwrap().last().unwrap().to_string();
-    tokio::spawn(async move {
-        progress_bar.set_style(
-            ProgressStyle::with_template(
-                "{prefix} [{elapsed_precise}] [{bar:.cyan/blue}] {bytes}/{total_bytes} {wide_msg:>}",
-            )?
-            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-            .progress_chars("#>-"),
-        );
-        progress_bar.set_prefix(format!(
-            "[{}/{}] {}Downloading...",
-            index,
-            total,
-            Emoji::new("🔗 ", ""),
-        ));
-        progress_bar.set_message(file_name.to_string());
-        let response = client.get(url.clone()).send().await?;
-        let mut response = response.error_for_status()?;
-        if let Some(content_length) = response.content_length() {
-            progress_bar.set_length(content_length);
-        } else {
-            return Err(anyhow!("empty content: {}", url));
-        }
-        let mut file = File::create(outfile).await?;
-        while let Some(bytes) = response.chunk().await? {
-            progress_bar.inc(bytes.len() as u64);
-            file.write_all(&bytes).await?;
-        }
-        progress_bar.set_prefix(format!(
-            "[{}/{}] {}Downloaded!   ",
-            index,
-            total,
-            Emoji::new("✅ ", ""),
-        ));
-        progress_bar.finish();
-        Ok(())
-    })
+    key: String,
+    mut asset: Asset,
+    directory: impl AsRef<Path>,
+    progress_bar: ProgressBar,
+) -> Result<(String, Asset), Error> {
+    progress_bar.set_style(
+        ProgressStyle::with_template(
+            "=> => [{elapsed_precise}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
+        )
+        .unwrap(),
+    );
+    progress_bar.set_message(format!("{}: {}", key, asset.href));
+    let url = Url::parse(&asset.href)?;
+    let file_name = url
+        .path_segments()
+        .and_then(|s| s.last().map(|s| s.to_string()))
+        .ok_or_else(|| Error::NoFileName(url.clone()))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())?;
+    if let Some(content_length) = response.content_length() {
+        progress_bar.set_length(content_length);
+    }
+    let path = directory.as_ref().join(&file_name);
+    let mut file = File::create(path).await?;
+    while let Some(chunk) = response.chunk().await? {
+        progress_bar.inc(chunk.len() as u64);
+        file.write_all(&chunk).await?;
+    }
+    asset.href = format!("./{}", file_name);
+    progress_bar.finish_and_clear();
+    Ok((key, asset))
+}
+
+fn update_links(item: &mut Item, path: impl AsRef<Path>) -> Result<(), stac::Error> {
+    item.make_relative_links_absolute()?;
+    if let Some(mut link) = item.self_link().cloned() {
+        link.rel = "canonical".to_string();
+        item.set_link(link)
+    }
+    item.set_link(Link::self_(path.as_ref().to_string_lossy().into_owned()));
+    Ok(())
 }

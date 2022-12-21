@@ -1,36 +1,37 @@
 use clap::{Parser, Subcommand};
-use stac::PathBufHref;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about)]
+#[command(author, version, about)]
 struct Cli {
-    #[clap(subcommand)]
-    command: Option<Commands>,
+    #[command(subcommand)]
+    command: Command,
 }
 
 #[derive(Debug, Subcommand)]
-enum Commands {
-    /// Downloads objects and assets.
+enum Command {
+    /// Download a STAC Item and its assets.
     Download {
-        /// Href of the STAC object.
+        /// The href of the STAC Item.
         href: String,
 
-        /// The output directory into which the object and assets will be downloaded.
-        outdir: String,
+        /// The directory that will hold the Item and its assets. If it does not
+        /// exist, it will be created.
+        directory: PathBuf,
     },
+
+    /// Validate a STAC object.
+    Validate { href: String },
 }
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    use Command::*;
 
-    match cli.command {
-        Some(Commands::Download { href, outdir }) => {
-            stac_cli::download::download_item(PathBufHref::from(href).into(), PathBuf::from(outdir))
-                .await
-                .unwrap()
-        }
-        None => {}
-    }
+    let cli = Cli::parse();
+    let code = match cli.command {
+        Download { href, directory } => stac_cli::download(href, directory).await,
+        Validate { href } => stac_cli::validate(href).await,
+    };
+    std::process::exit(code);
 }
