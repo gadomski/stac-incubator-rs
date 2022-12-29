@@ -53,8 +53,10 @@ impl Client {
     /// let client = stac_async::Client::new();
     /// ```
     ///
-    /// You don't need to use [Client::new] -- you can simply provide a
-    /// pre-built client instead, e.g. to do authorization:
+    /// ## Custom client
+    ///
+    /// You can construct the client directly using a pre-built
+    /// [reqwest::Client], e.g. to do authorization:
     ///
     /// ```
     /// use reqwest::header;
@@ -137,7 +139,7 @@ pub async fn read_json(href: &str) -> Result<serde_json::Value, Error> {
 /// ```no_run
 /// let item = stac::Item::new("an-id");
 /// # tokio_test::block_on(async {
-/// let value = stac_async::write_json_to_path(item, "item.json").await.unwrap();
+/// let value = stac_async::write_json_to_path("item.json", item).await.unwrap();
 /// # })
 /// ```
 pub async fn write_json_to_path(
