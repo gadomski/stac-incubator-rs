@@ -25,6 +25,8 @@ stac --help
 Download all the assets of a STAC item.
 The STAC item will be written out, with its assets updated to point to the locally downloaded assets.
 
+![stac-download](./img/stac-download.gif)
+
 ### Validate
 
 Validate a STAC object with [json-schema](https://json-schema.org/):
