@@ -1,15 +1,14 @@
 # stac-incubator-rs
 
 Incubator repository for [stac-rs](https://github.com/gadomski/stac-rs).
-See each sub-project's README for more details:
-
-- [cli](cli/README.md)
+Currently nothing in incubation.
 
 ## Hatched
 
 These projects used to be part of the incubator, but now are their own repositories (or have been incorporated into the **stac-rs** repository):
 
 - [stac-async](https://github.com/gadomski/stac-rs/blob/main/stac-async/README.md)
+- [stac-cli](https://github.com/gadomski/stac-rs/blob/main/stac-cli/README.md)
 - [stac-server](https://github.com/gadomski/stac-server-rs/)
 
 ## Community
